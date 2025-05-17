@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepSeek Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    
+    body {
+      font-family: 'Inter', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    .sidebar {
+      transition: transform 0.3s ease;
+    }
+    
+    .sidebar-closed {
+      transform: translateX(-100%);
+    }
+    
+    .sidebar-open {
+      transform: translateX(0);
+    }
+    
+    .message-input::placeholder {
+      color: #999999;
+      opacity: 1;
+    }
+    
+    .conversation-item:hover {
+      background-color: #1a1a1a;
+    }
+    
+    .active-conversation {
+      background-color: #1a1a1a;
+    }
+    
+    .logo-icon {
+      width: 60px;
+      height: 60px;
+      background: #4169E1;
+      border-radius: 50%;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .logo-icon::before {
+      content: "";
+      position: absolute;
+      top: 15px;
+      left: 10px;
+      width: 40px;
+      height: 20px;
+      background: #4169E1;
+      border-radius: 50%;
+      transform: rotate(-30deg);
+    }
+    
+    .logo-icon::after {
+      content: "";
+      position: absolute;
+      top: 25px;
+      right: 10px;
+      width: 15px;
+      height: 8px;
+      background: #000000;
+      border-radius: 50%;
+      transform: rotate(-30deg);
+    }
+    
+    /* Animation for thinking indicator */
+    @keyframes pulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    .thinking-indicator span {
+      animation: pulse 1.5s infinite;
+    }
+    .thinking-indicator span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    .thinking-indicator span:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+    
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #1a1a1a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #333333;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function DeepSeekChat() {
+      // State management
+      const [messages, setMessages] = useState([]);
+      const [input, setInput] = useState('');
+      const [conversations, setConversations] = useState([]);
+      const [currentConversation, setCurrentConversation] = useState(null);
+      const [sidebarOpen, setSidebarOpen] = useState(false);
+      const [isThinkingMode, setIsThinkingMode] = useState(false);
+      const [isLoading, setIsLoading] = useState(false);
+      const messagesEndRef = useRef(null);
+      const inputRef = useRef(null);
+
+      // API key from environment (will be replaced during deployment)
+      const API_KEY = 'YOUR_VERCEL_ENV_OPEN_ROUTER_KEY';
+
+      // Load conversations from localStorage
+      useEffect(() => {
+        const savedConversations = localStorage.getItem('deepseek-conversations');
+        if (savedConversations) {
+          try {
+            const parsed = JSON.parse(savedConversations);
+            setConversations(parsed);
+            
+            // If there are conversations but no active one, select the most recent
+            if (parsed.length > 0 && !currentConversation) {
+              setCurrentConversation(parsed[0].id);
+              setMessages(parsed[0].messages);
+              setIsThinkingMode(parsed[0].isThinkingMode || false);
+            }
+          } catch (e) {
+            console.error("Failed to parse conversations", e);
+          }
+        }
+      }, []);
+
+      // Save conversations to localStorage when they change
+      useEffect(() => {
+        if (conversations.length > 0) {
+          localStorage.setItem('deepseek-conversations', JSON.stringify(conversations));
+        }
+      }, [conversations]);
+
+      // Auto-scroll to bottom when messages change
+      useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, [messages]);
+
+      // Focus input on load and when sidebar closes
+      useEffect(() => {
+        inputRef.current?.focus();
+      }, [sidebarOpen]);
+
+      const callOpenRouterAPI = async (messages, isThinking) => {
+        const model = isThinking 
+          ? "deepseek/deepseek-r1:free" 
+          : "deepseek/deepseek-chat-v3-0324:free";
+        
+        try {
+          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${API_KEY}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": window.location.href,
+              "X-Title": "DeepSeek Chat"
+            },
+            body: JSON.stringify({
+              model,
+              messages: messages.map(msg => ({
+                role: msg.role,
+                content: msg.content
+              }))
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`API request failed with status ${response.status}`);
+          }
+
+          const data = await response.json();
+          return data.choices[0]?.message?.content || "I couldn't generate a response. Please try again.";
+        } catch (error) {
+          console.error("API call failed:", error);
+          return `Error: ${error.message}`;
+        }
+      };
+
+      const handleSendMessage = async () => {
+        if (!input.trim()) return;
+
+        setIsLoading(true);
+        const userMessage = {
+          id: Date.now(),
+          content: input,
+          role: 'user',
+          timestamp: new Date().toISOString()
+        };
+
+        let updatedConversations = [...conversations];
+        let updatedMessages = [...messages, userMessage];
+
+        // Create new conversation if none exists
+        if (!currentConversation) {
+          const newConversation = {
+            id: Date.now(),
+            title: input.slice(0, 30) || "New conversation",
+            messages: [userMessage],
+            createdAt: new Date(),
+            isThinkingMode: isThinkingMode
+          };
+          updatedConversations = [newConversation, ...conversations];
+          setCurrentConversation(newConversation.id);
+          setConversations(updatedConversations);
+        } else {
+          // Update existing conversation
+          updatedConversations = conversations.map(conv => 
+            conv.id === currentConversation
+              ? { ...conv, messages: [...conv.messages, userMessage] }
+              : conv
+          );
+          setConversations(updatedConversations);
+        }
+
+        setMessages(updatedMessages);
+        setInput('');
+
+        // Generate AI response
+        try {
+          const aiResponse = await callOpenRouterAPI(updatedMessages, isThinkingMode);
+          
+          const aiMessage = {
+            id: Date.now() + 1,
+            content: aiResponse,
+            role: 'assistant',
+            timestamp: new Date().toISOString(),
+            isThinkingMode: isThinkingMode
+          };
+
+          setMessages([...updatedMessages, aiMessage]);
+          setConversations(updatedConversations.map(conv => 
+            conv.id === currentConversation || (currentConversation === null && conv.id === updatedConversations[0].id)
+              ? { ...conv, messages: [...conv.messages, aiMessage] }
+              : conv
+          ));
+        } catch (error) {
+          console.error("Error generating response:", error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const startNewConversation = () => {
+        setCurrentConversation(null);
+        setMessages([]);
+        setSidebarOpen(false);
+        inputRef.current?.focus();
+      };
+
+      const selectConversation = (id) => {
+        const conversation = conversations.find(conv => conv.id === id);
+        if (conversation) {
+          setCurrentConversation(id);
+          setMessages(conversation.messages);
+          setIsThinkingMode(conversation.isThinkingMode || false);
+          setSidebarOpen(false);
+          inputRef.current?.focus();
+        }
+      };
+
+      const deleteConversation = (id, e) => {
+        e.stopPropagation();
+        const updatedConversations = conversations.filter(conv => conv.id !== id);
+        setConversations(updatedConversations);
+        
+        if (currentConversation === id) {
+          startNewConversation();
+        }
+      };
+
+      const formatDateHeader = (date) => {
+        if (!(date instanceof Date)) date = new Date(date);
+        const today = new Date();
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const thirtyDaysAgo = new Date(today);
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        if (date.toDateString() === today.toDateString()) return "Today";
+        if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+        if (date > thirtyDaysAgo) return "Last 30 Days";
+        
+        return date.toLocaleString('default', { month: 'short', year: 'numeric' });
+      };
+
+      const groupConversationsByDate = () => {
+        const grouped = {};
+        conversations.forEach(conv => {
+          const header = formatDateHeader(conv.createdAt);
+          if (!grouped[header]) {
+            grouped[header] = [];
+          }
+          grouped[header].push(conv);
+        });
+        return grouped;
+      };
+
+      return (
+        <div className="flex h-screen bg-black text-white overflow-hidden">
+          {/* Main Chat Interface */}
+          <div className="flex-1 flex flex-col relative">
+            {/* Header Bar */}
+            <div className="h-[8vh] flex items-center justify-between px-[5%] border-b border-gray-800">
+              <button 
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="text-white text-2xl"
+              >
+                ≡
+              </button>
+              <div className="text-white text-xl font-medium">
+                {currentConversation 
+                  ? conversations.find(c => c.id === currentConversation)?.title 
+                  : "New chat"}
+              </div>
+              <button 
+                onClick={startNewConversation}
+                className="text-white text-2xl"
+              >
+                +
+              </button>
+            </div>
+
+            {/* Main Content Area */}
+            <div className="flex-1 overflow-y-auto pb-[15vh]">
+              {messages.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center">
+                  <div className="logo-icon mb-6"></div>
+                  <h1 className="text-2xl font-medium text-white mb-2">Hi, I'm DeepSeek.</h1>
+                  <p className="text-gray-400 text-xl font-normal">How can I help you today?</p>
+                </div>
+              ) : (
+                <div className="px-4 py-6 space-y-6">
+                  {messages.map(message => (
+                    <div
+                      key={message.id}
+                      className={`max-w-3xl mx-auto p-4 rounded-lg ${
+                        message.role === 'user' 
+                          ? 'bg-gray-800 ml-auto' 
+                          : 'bg-gray-900 mr-auto'
+                      }`}
+                    >
+                      {message.content}
+                      {message.role === 'assistant' && message.isThinkingMode && (
+                        <div className="text-xs text-blue-400 mt-2">DeepThink (R1) Analysis</div>
+                      )}
+                    </div>
+                  ))}
+                  
+                  {isLoading && (
+                    <div className="max-w-3xl mx-auto p-4 rounded-lg bg-gray-900 mr-auto">
+                      <div className="thinking-indicator flex items-center space-x-1">
+                        <span>•</span>
+                        <span>•</span>
+                        <span>•</span>
+                        <span className="ml-2">
+                          {isThinkingMode ? 'Deep thinking...' : 'Thinking...'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </div>
+
+            {/* Input Area */}
+            <div className="p-4 fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
+              <div className="relative max-w-3xl mx-auto">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Message DeepSeek"
+                  className="message-input w-full bg-gray-800 text-white h-12 px-6 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  disabled={isLoading}
+                />
+                {input && (
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={isLoading}
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 bg-blue-700 text-white w-8 h-8 rounded-full flex items-center justify-center disabled:opacity-50"
+                  >
+                    ↑
+                  </button>
+                )}
+              </div>
+              
+              {/* Bottom Toolbar */}
+              <div className="flex justify-center items-center mt-4">
+                <button 
+                  onClick={() => setIsThinkingMode(!isThinkingMode)}
+                  disabled={isLoading}
+                  className={`flex items-center space-x-1 px-4 py-2 rounded-full ${
+                    isThinkingMode ? 'bg-blue-600' : 'bg-gray-800'
+                  } disabled:opacity-50`}
+                >
+                  <span>{isThinkingMode ? 'DeepThink (R1) Active' : 'Activate DeepThink (R1)'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Sidebar Navigation */}
+          <div className={`fixed inset-0 bg-black z-10 md:relative md:w-64 sidebar ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
+            <div className="h-full flex flex-col border-r border-gray-800">
+              {/* Close button for mobile */}
+              <button 
+                onClick={() => setSidebarOpen(false)}
+                className="absolute right-4 top-4 text-white md:hidden"
+              >
+                ×
+              </button>
+              
+              {/* New chat button for sidebar */}
+              <button
+                onClick={startNewConversation}
+                className="mx-4 mt-4 mb-2 p-3 bg-gray-800 rounded-md text-white flex items-center justify-center hover:bg-gray-700 transition-colors"
+              >
+                <span className="mr-2">+</span> New chat
+              </button>
+              
+              {/* Conversation list */}
+              <div className="flex-1 overflow-y-auto px-2">
+                {conversations.length > 0 ? (
+                  Object.entries(groupConversationsByDate()).map(([header, convs]) => (
+                    <div key={header}>
+                      <h3 className="text-gray-500 text-sm font-medium px-3 py-2">
+                        {header}
+                      </h3>
+                      {convs.map(conv => (
+                        <div
+                          key={conv.id}
+                          onClick={() => selectConversation(conv.id)}
+                          className={`conversation-item px-3 py-3 rounded-md cursor-pointer flex items-center justify-between ${
+                            currentConversation === conv.id ? 'active-conversation' : ''
+                          }`}
+                        >
+                          <div className="truncate flex-1">{conv.title}</div>
+                          <button
+                            onClick={(e) => deleteConversation(conv.id, e)}
+                            className="text-gray-400 hover:text-white ml-2"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-gray-400 text-center py-4">
+                    No conversations yet
+                  </div>
+                )}
+              </div>
+              
+              {/* User profile (minimal) */}
+              <div className="p-4 border-t border-gray-800 flex items-center justify-center">
+                <div className="text-gray-400 text-sm">DeepSeek Chat</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<DeepSeekChat />);
+  </script>
+</body>
+</html>
